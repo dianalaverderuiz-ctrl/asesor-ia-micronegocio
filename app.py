@@ -1,270 +1,382 @@
-# ==============================================================================
-# SISTEMA GENERAL MVP: ENFOQUE DE CUATRO PUNTAS CON ALERTAS OPERATIVAS AUTOMÁTICAS
-# ==============================================================================
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
-import urllib.parse
+from datetime import datetime, date
 
-# Configuración del entorno táctil de la aplicación móvil
-st.set_page_config(page_title="Asesor IA - Ciclo Financiero", page_icon="📲", layout="centered")
+# Configuración inicial del entorno de analítica
+st.set_page_config(page_title="Asesor IA - Finanzas de Micronegocios", layout="wide")
 
-# ==============================================================================
-# INICIALIZACIÓN DEL MOTOR DE PERSISTENCIA (SESSION STATE)
-# ==============================================================================
-if "configurado" not in st.session_state:
-    st.session_state.configurado = False
-    st.session_state.nombre = ""
-    st.session_state.negocio = ""
-    st.session_state.dia_actual = 1
-    
-    # Catálogos maestros para indexación futura (Autocompletado)
-    st.session_state.cat_clientes = []
-    st.session_state.cat_proveedores = []
-    st.session_state.cat_articulos = []
-    
-    # Estructura del Estado Financiero e Historiales
-    st.session_state.saldo_caja = 0
-    st.session_state.inventario_stock = 0
-    st.session_state.registro_ventas = []
-    st.session_state.registro_compras = []
-    st.session_state.registro_recaudos = []
-    st.session_state.registro_gastos = []
+# --- CENTRAL DE PERSISTENCIA CONTABLE (session_state) ---
+if 'step' not in st.session_state:
+    st.session_state.step = 1
+if 'db_inventario' not in st.session_state:
+    st.session_state.db_inventario = {}  # { "Producto": {"cantidad": X, "costo_u": Y, "ventas_unidades": Z} }
+if 'db_clientes' not in st.session_state:
+    st.session_state.db_clientes = {}     # { "Cliente": saldo_inicial }
+if 'db_proveedores' not in st.session_state:
+    st.session_state.db_proveedores = {} # { "Proveedor": saldo_inicial }
+if 'libro_diario' not in st.session_state:
+    st.session_state.libro_diario = []
+if 'caja_inicial' not in st.session_state:
+    st.session_state.caja_inicial = 0.0
 
-def obtener_fecha_simulada():
-    fecha_base = datetime(2026, 6, 1)
-    return fecha_base + timedelta(days=st.session_state.dia_actual - 1)
+# Estilos CSS de la interfaz ejecutiva
+st.markdown("""
+    <style>
+    .stButton>button { width: 100%; font-weight: bold; }
+    .kpi-box { background-color: #f8f9fa; border-left: 5px solid #1c3d5a; padding: 15px; border-radius: 4px; }
+    .alert-warn { background-color: #fff3cd; border-left: 5px solid #ffc107; padding: 12px; border-radius: 4px; margin-bottom: 8px; }
+    </style>
+""", unsafe_allow_html=True)
 
-def fmt_moneda(valor):
-    return f"${valor:,.0f} COP"
-
-# ==============================================================================
-# FASE 1: CONFIGURACIÓN DE PERFIL Y ESTABLECIMIENTO DE SALDOS INICIALES
-# ==============================================================================
-if not st.session_state.configurado:
-    st.title("📲 Inicialización del Negocio")
-    st.write("Configure los parámetros iniciales de control para los módulos financieros.")
+# =========================================================================
+# FASE 1: PRE-CARGA E INGESTA COMPLETA DE SALDOS INICIALES
+# =========================================================================
+if st.session_state.step == 1:
+    st.title("🏛️ Balance de Apertura e Ingesta de Saldos Iniciales")
+    st.markdown("Configure de forma analítica el estado inicial de su micronegocio antes de inicializar el diario.")
     
-    st.session_state.nombre = st.text_input("Nombre de la Persona:", placeholder="Ej. Diana")
-    st.session_state.negocio = st.text_input("Nombre del Negocio:", placeholder="Ej. Tienda Caribe")
-    
-    st.markdown("---")
-    st.write("#### 💰 Configuración de Saldos Iniciales Base")
-    st.session_state.saldo_caja = st.number_input("Saldo Inicial en Caja ($):", min_value=0, value=500000, step=50000)
-    st.session_state.inventario_stock = st.number_input("Valor Inicial del Inventario ($):", min_value=0, value=1200000, step=100000)
-    
-    if st.button("Guardar Parámetros e Iniciar App", type="primary"):
-        if st.session_state.nombre and st.session_state.negocio:
-            st.session_state.configurado = True
-            st.rerun()
-        else:
-            st.error("Por favor, complete los campos de nombre y negocio.")
-
-# ==============================================================================
-# ENTORNO OPERATIVO: CONTROL DIARIO, SEMANAL Y MENSUAL
-# ==============================================================================
-else:
-    fecha_hoy = obtener_fecha_simulada()
-    st.title(f"🏢 {st.session_state.negocio}")
-    
-    # Notificación proactiva diaria en el banner superior
-    st.info(f"🔔 **[ALERTA DIARIA - 7:00 AM]**\n🤖 ¡Epa {st.session_state.nombre}! No olvides registrar los movimientos del día de hoy: **{fecha_hoy.strftime('%d/%m/%Y')}** (Día {st.session_state.dia_actual} del ciclo).")
-    
-    # ─── PANEL GENERAL DE SALDOS EN TIEMPO REAL (ACCESO CON UN CLICK) ───
-    with st.expander("📊 CLIC AQUÍ PARA CONSULTAR SALDOS ACTUALES DE LOS MÓDULOS", expanded=True):
-        c_cobrar_tot = sum(v["monto"] for v in st.session_state.registro_ventas if v["tipo"] == "Crédito") - sum(r["monto"] for r in st.session_state.registro_recaudos)
-        c_pagar_tot = sum(c["monto"] for c in st.session_state.registro_compras if c["condicion"] == "Crédito")
-        
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("📦 Inventario", fmt_moneda(st.session_state.inventario_stock))
-        m2.metric("💵 Caja", fmt_moneda(st.session_state.saldo_caja))
-        m3.metric("💸 Por Cobrar", fmt_moneda(c_cobrar_tot))
-        m4.metric("📉 Por Pagar", fmt_moneda(c_pagar_tot))
-
-    # ─── ENTRADA GENERAL DE CATÁLOGOS MAESTROS ───
-    with st.expander("➕ Módulo de Creación: Clientes, Proveedores y Artículos"):
-        tipo_creacion = st.radio("¿Qué desea registrar en la base de datos?", ["Cliente", "Proveedor", "Artículo"], horizontal=True)
-        if tipo_creacion == "Cliente":
-            nuevo_cli = st.text_input("Nombre Completo del Cliente:").strip().capitalize()
-            if st.button("Añadir Cliente") and nuevo_cli:
-                if nuevo_cli not in st.session_state.cat_clientes:
-                    st.session_state.cat_clientes.append(nuevo_cli)
-                    st.success(f"Cliente '{nuevo_cli}' creado.")
-        elif tipo_creacion == "Proveedor":
-            nuevo_prov = st.text_input("Nombre del Proveedor:").strip().upper()
-            if st.button("Añadir Proveedor") and nuevo_prov:
-                if nuevo_prov not in st.session_state.cat_proveedores:
-                    st.session_state.cat_proveedores.append(nuevo_prov)
-                    st.success(f"Proveedor '{nuevo_prov}' registrado.")
-        elif tipo_creacion == "Artículo":
-            nuevo_art = st.text_input("Nombre / Detalle del Artículo:").strip()
-            if st.button("Añadir Artículo") and nuevo_art:
-                if nuevo_art not in st.session_state.cat_articulos:
-                    st.session_state.cat_articulos.append(nuevo_art)
-                    st.success(f"Artículo '{nuevo_art}' catalogado.")
+    col_e1, col_e2 = st.columns(2)
+    nombre_e = col_e1.text_input("Nombre del Empresario:", "Diana Laverde")
+    negocio = col_e2.text_input("Razón Comercial del Micronegocio:", "Mi Micronegocio")
+    caja_inv = st.number_input("Efectivo Inicial en Caja / Bancos ($ COP):", min_value=0.0, value=500000.0, step=50000.0)
 
     st.markdown("---")
     
-    # ==============================================================================
-    # INTERFAZ DE LAS CUATRO PUNTAS OPERATIVAS DEL CICLO FINANCIERO
-    # ==============================================================================
-    st.write("### ⚙️ Ciclo de Operaciones")
-    punta = st.selectbox("Seleccione el módulo a gestionar:", ["1. COMPRA (Inventarios y Proveedores)", "2. VENDE (Descargue e Ingresos)", "3. RECAUDA (Contado y Crédito)", "4. PAGA (Gastos recurrentes y fijos)"])
-    
-    # ─── PUNTA 1: COMPRA ───
-    if "COMPRA" in punta:
-        with st.form("form_compra", clear_on_submit=True):
-            st.write("#### Registrar Compra de Mercancía o Insumos")
-            prov = st.selectbox("Seleccione el Proveedor:", [""] + st.session_state.cat_proveedores)
-            condicion = st.radio("Condición de Pago:", ["Contado", "Crédito"])
-            insumo = st.text_input("Detalle de la Mercancía:")
-            monto = st.number_input("Monto Total de la Compra ($):", min_value=0, step=10000)
-            
-            if st.form_submit_button("Guardar Operación de Compra"):
-                if prov and insumo and monto > 0:
-                    st.session_state.inventario_stock += monto
-                    if condicion == "Contado":
-                        st.session_state.saldo_caja -= monto
-                    st.session_state.registro_compras.append({"fecha": fecha_hoy.strftime('%Y-%m-%d'), "proveedor": prov, "condicion": condicion, "monto": monto, "insumo": insumo})
-                    st.success("✔ Compra registrada exitosamente.")
-                    st.rerun()
-                else: st.error("Complete todos los campos del formulario.")
+    # 1. Componente de Inventario Inicial
+    st.subheader("📦 1. Cargar Productos al Inventario de Apertura")
+    c_inv1, c_inv2, c_inv3 = st.columns([2, 1, 1])
+    p_nombre = c_inv1.text_input("Nombre del Producto / Artículo:")
+    p_cant = c_inv2.number_input("Cantidad Disponible:", min_value=0, value=0)
+    p_costo = c_inv3.number_input("Costo Unitario ($ COP):", min_value=0.0, value=0.0)
+    if st.button("➕ Registrar Producto en Inventario Inicial"):
+        if p_nombre and p_cant > 0:
+            st.session_state.db_inventario[p_nombre] = {"cantidad": p_cant, "costo_u": p_costo, "ventas_unidades": 0}
+            st.success(f"Producto '{p_nombre}' añadido al inventario inicial.")
+    if st.session_state.db_inventario:
+        st.write("**Inventario Cargado Histórico:**")
+        st.dataframe(pd.DataFrame.from_dict(st.session_state.db_inventario, orient='index'))
 
-    # ─── PUNTA 2: VENDE ───
-    elif "VENDE" in punta:
-        with st.form("form_vende", clear_on_submit=True):
-            st.write("#### Registrar Venta y Descargue de Inventario")
-            cli = st.selectbox("Seleccione el Cliente:", [""] + st.session_state.cat_clientes)
-            art = st.selectbox("Seleccione el Artículo:", [""] + st.session_state.cat_articulos)
-            tipo_v = st.radio("Tipo de Venta:", ["Contado", "Crédito"])
-            monto = st.number_input("Valor de la Transacción ($):", min_value=0, step=10000)
-            
-            # Subcampo interactivo condicionado para ventas a crédito
-            fecha_venc = st.date_input("Fecha de Vencimiento del Crédito:", value=fecha_hoy + timedelta(days=15)) if tipo_v == "Crédito" else None
-            
-            if st.form_submit_button("Guardar Operación de Venta"):
-                if cli and art and monto > 0:
-                    st.session_state.inventario_stock = max(0, st.session_state.inventario_stock - (monto * 0.6))  # Costo estimado de descarga
-                    if tipo_v == "Contado":
-                        st.session_state.saldo_caja += monto
-                    
-                    st.session_state.registro_ventas.append({
-                        "fecha": fecha_hoy.strftime('%Y-%m-%d'), "cliente": cli, "tipo": tipo_v, 
-                        "monto": monto, "articulo": art, "vencimiento": fecha_venc.strftime('%Y-%m-%d') if fecha_venc else None
-                    })
-                    st.success("✔ Venta procesada correctamente.")
-                    st.rerun()
-                else: st.error("Complete la información básica de la venta.")
-
-    # ─── PUNTA 3: RECAUDA ───
-    elif "RECAUDA" in punta:
-        with st.form("form_recauda", clear_on_submit=True):
-            st.write("#### Registrar Recaudo de Carteras de Clientes")
-            cli = st.selectbox("Seleccione el Cliente que paga:", [""] + st.session_state.cat_clientes)
-            monto = st.number_input("Monto Recibido en Efectivo ($):", min_value=0, step=10000)
-            
-            if st.form_submit_button("Guardar Recaudo"):
-                if cli and monto > 0:
-                    st.session_state.saldo_caja += monto
-                    st.session_state.registro_recaudos.append({"fecha": fecha_hoy.strftime('%Y-%m-%d'), "cliente": cli, "monto": monto})
-                    st.success(f"✔ Recaudo abonado a la cuenta de {cli}.")
-                    st.rerun()
-
-    # ─── PUNTA 4: PAGA ───
-    elif "PAGA" in punta:
-        with st.form("form_paga", clear_on_submit=True):
-            st.write("#### Registrar Salidas por Gastos")
-            clase_g = st.selectbox("Clasificación del Gasto:", ["Servicios públicos", "Nóminas", "Arriendos", "Otros egresos"])
-            monto = st.number_input("Valor del Pago ($):", min_value=0, step=10000)
-            recurrente = st.checkbox("¿Es un gasto de carácter recurrente?")
-            prox_pago = st.date_input("Fecha estimada del próximo pago:", value=fecha_hoy + timedelta(days=30))
-            obs = st.text_input("Observación cualitativa del gasto:", placeholder="Ej. Tarifa de luz mes corriente")
-            
-            if st.form_submit_button("Guardar Gasto"):
-                if monto > 0:
-                    st.session_state.saldo_caja -= monto
-                    st.session_state.registro_gastos.append({
-                        "fecha": fecha_hoy.strftime('%Y-%m-%d'), "clase": clase_g, "monto": monto,
-                        "recurrente": recurrente, "prox_pago": prox_pago.strftime('%Y-%m-%d') if recurrente else None, "obs": obs
-                    })
-                    st.success("✔ Gasto indexado en la bitácora.")
-                    st.rerun()
-
-    # ==============================================================================
-    # FASE 3: PIPELINE CRONOMETRADO DE ALERTAS Y SEGUIMIENTO SEMANAL
-    # ==============================================================================
     st.markdown("---")
-    c_av, c_mes = st.columns(2)
     
-    if c_av.button("⏩ Avanzar Jornada Laboral (Día)", use_container_width=True):
-        if st.session_state.dia_actual < 30:
-            st.session_state.dia_actual += 1
-            st.rerun()
+    # 2. Componente de Cartera Inicial
+    st.subheader("👥 2. Cargar Cartera de Clientes (Saldos por Cobrar)")
+    c_cl1, c_cl2 = st.columns(2)
+    cl_nombre = c_cl1.text_input("Nombre del Cliente:")
+    cl_saldo = c_cl2.number_input("Saldo Pendiente que Trae ($ COP):", min_value=0.0, value=0.0)
+    if st.button("➕ Registrar Cliente en Cartera"):
+        if cl_nombre and cl_saldo > 0:
+            st.session_state.db_clientes[cl_nombre] = cl_saldo
+            st.success(f"Cliente '{cl_nombre}' indexado con saldo inicial.")
+    if st.session_state.db_clientes:
+        st.write("**Cartera de Apertura:**")
+        st.dataframe(pd.DataFrame.from_dict(st.session_state.db_clientes, orient='index', columns=['Saldo Inicial']))
 
-    if c_mes.button("📊 Forzar Cierre y Balance Mensual (Día 30)", use_container_width=True, type="primary"):
-        st.session_state.dia_actual = 30
+    st.markdown("---")
+    
+    # 3. Componente de Proveedores Iniciales
+    st.subheader("🏭 3. Cargar Cuentas por Pagar (Proveedores Históricos)")
+    c_pr1, c_pr2 = st.columns(2)
+    pr_nombre = c_pr1.text_input("Nombre del Proveedor:")
+    pr_saldo = c_pr2.number_input("Saldo de la Deuda Pendiente ($ COP):", min_value=0.0, value=0.0)
+    if st.button("➕ Registrar Cuenta por Pagar"):
+        if pr_nombre and pr_saldo > 0:
+            st.session_state.db_proveedores[pr_nombre] = pr_saldo
+            st.success(f"Proveedor '{pr_nombre}' indexado con saldo inicial.")
+    if st.session_state.db_proveedores:
+        st.write("**Cuentas por Pagar de Apertura:**")
+        st.dataframe(pd.DataFrame.from_dict(st.session_state.db_proveedores, orient='index', columns=['Saldo por Pagar']))
+
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    if st.button("🚀 CONSOLIDAR BALANCE DE APERTURA Y ACTIVAR ASESOR", type="primary"):
+        st.session_state.nombre_e = nombre_e
+        st.session_state.negocio = negocio
+        st.session_state.caja_inicial = caja_inv
+        st.session_state.step = 2
         st.rerun()
 
-    # --- MOTOR DE ALERTAS FINANCIERAS Y ENLACES DE COBRO POR WHATSAPP ---
-    st.write("### 🚨 Sistema de Alertas de Vencimiento y Proveedores")
+# =========================================================================
+# FASE 2: MOTOR DE EJECUCIÓN, CUATRO FRENTES Y ASESOR FINANCIERO
+# =========================================================================
+else:
+    # Recalcular saldos dinámicos basados en la apertura y el libro diario
+    val_inv_apertura = sum(v["cantidad"] * v["costo_u"] for v in st.session_state.db_inventario.values())
+    val_cartera_apertura = sum(st.session_state.db_clientes.values())
+    val_proveedores_apertura = sum(st.session_state.db_proveedores.values())
     
-    # 1. Alertas de Cuentas por Cobrar con Botón de WhatsApp
-    for v in st.session_state.registro_ventas:
-        if v["tipo"] == "Crédito":
-            f_venc = datetime.strptime(v["vencimiento"], '%Y-%m-%d')
-            if fecha_hoy >= f_venc:
-                # Generar el mensaje automatizado para el cliente
-                msg_wa = f"Hola {v['cliente']}, un saludo de {st.session_state.negocio}. Te recordamos que la cuenta por valor de {fmt_moneda(v['monto'])} por concepto de {v['articulo']} venció el {f_venc.strftime('%d/%m/%Y')}. Agradecemos tu valioso pago."
-                url_wa = f"https://api.whatsapp.com/send?text={urllib.parse.quote(msg_wa)}"
-                
-                st.warning(f"⚠️ **Crédito Vencido:** {v['cliente']} debe {fmt_moneda(v['monto'])} desde el {f_venc.strftime('%d/%m/%Y')}.")
-                st.markdown(f"[📲 Enviar Recordatorio de Cobro vía WhatsApp]({url_wa})")
+    caja_actual = st.session_state.caja_inicial
+    cartera_actual = val_cartera_apertura
+    proveedores_actual = val_proveedores_apertura
 
-    # 2. Alertas de Costos y Gastos Recurrentes
-    for g in st.session_state.registro_gastos:
-        if g["recurrente"]:
-            f_prox = datetime.strptime(g["prox_pago"], '%Y-%m-%d')
-            if (f_prox - fecha_hoy).days <= 3:
-                st.error(f"📉 **Recordatorio de Pago:** Tu gasto recurrente de '{g['clase']}' tiene una fecha estimada de pago el {f_prox.strftime('%d/%m/%Y')} por valor de {fmt_moneda(g['monto'])}.")
+    # Procesar transacciones asentadas para actualizar saldos en tiempo real
+    for trans in st.session_state.libro_diario:
+        total = trans["Total"]
+        modo = trans["Modo"]
+        frente = trans["Frente"]
+        
+        if frente == "COMPRA":
+            if modo == "Contado": caja_actual -= total
+            else: proveedores_actual += total
+        elif frente == "VENTA":
+            if modo == "Contado": caja_actual += total
+            else: cartera_actual += total
+        elif frente == "GASTO":
+            caja_actual -= total
+        elif frente == "COBRO":
+            caja_actual += total
+            cartera_actual -= total
+        elif frente == "PAGO":
+            caja_actual -= total
+            proveedores_actual -= total
 
-    # 3. Reporte de Flujo de Caja Semanal Automático
-    if st.session_state.dia_actual in [7, 14, 21, 28]:
-        st.subheader(f"📊 Resumen del Flujo de Caja de la Semana {st.session_state.dia_actual // 7}")
-        ing_sem = sum(v["monto"] for v in st.session_state.registro_ventas if v["tipo"] == "Contado") + sum(r["monto"] for r in st.session_state.registro_recaudos)
-        egr_sem = sum(c["monto"] for c in st.session_state.registro_compras if c["condicion"] == "Contado") + sum(g["monto"] for g in st.session_state.registro_gastos)
-        st.metric("Flujo Neto Semanal", fmt_moneda(ing_sem - egr_sem))
+    # Interfaz de Usuario Central
+    st.title(f"📊 Panel Financiero Integral: {st.session_state.negocio}")
+    st.caption(f"Responsable Técnico: {st.session_state.nombre_e} | Libro Diario e Inteligencia Financiera")
+    
+    # KPIs Superiores de Control de Saldos
+    st.subheader("📈 Monitoreo de Saldos de Trabajo en Tiempo Real")
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("💵 DISPONIBLE EN CAJA", f"${caja_actual:,.2f} COP")
+    kpi2.metric("👥 TOTAL CARTERA DE CLIENTES", f"${cartera_actual:,.2f} COP")
+    kpi3.metric("🏭 PASIVOS TOTALES (PROVEEDORES)", f"${proveedores_actual:,.2f} COP")
+    
+    st.markdown("---")
+    
+    # --- INTERFAZ TÁCTIL DE LOS CUATRO FRENTES Y GASTOS ---
+    st.subheader("⚡ Acciones del Ciclo Operativo")
+    f1, f2, f3, f4, f5 = st.columns(5)
+    if f1.button("🛒 COMPRAS (Proveedores/Inventario)"): st.session_state.frente = "COMPRA"
+    if f2.button("💰 VENTAS (Clientes/Inventario)"): st.session_state.frente = "VENTA"
+    if f3.button("💸 GASTOS (Servicios/Nómina/Arriendo)"): st.session_state.frente = "GASTO"
+    if f4.button("📥 COBROS (Recaudo de Cartera)"): st.session_state.frente = "COBRO"
+    if f5.button("🏦 PAGOS (Abonos a Proveedores)"): st.session_state.frente = "PAGO"
 
-    # ==============================================================================
-    # FASES 4 Y 5: REPORTES MENSUALES COMPILADOS Y DESCARGABLES (.CSV)
-    # ==============================================================================
-    if st.session_state.dia_actual >= 30:
-        st.markdown("---")
-        st.header("📋 Informes y Estados Financieros del Ciclo")
-        
-        v_tot = sum(d["monto"] for d in st.session_state.registro_ventas)
-        c_tot = sum(d["monto"] for d in st.session_state.registro_compras)
-        g_tot = sum(d["monto"] for d in st.session_state.registro_gastos)
-        u_neta = (v_tot - (c_tot * 0.6)) - g_tot
-        
-        t1, t2 = st.tabs(["📈 Estado de Resultados", "🏛️ Balance General y Métricas"])
-        
-        with t1:
-            st.write(f"**(+) Ingreso Operativo por Ventas:** {fmt_moneda(v_tot)}")
-            st.write(f"**(-) Costo Estimado de Ventas:** {fmt_moneda(c_tot * 0.6)}")
-            st.write(f"**(-) Gastos de Local y Administración:** {fmt_moneda(g_tot)}")
-            st.markdown(f"### **UTILIDAD NETO DEL MES:** {fmt_moneda(u_neta)}")
+    # Formularios de Asentamiento Transaccional
+    if 'frente' in st.session_state:
+        st.markdown(f"### ✏️ Nuevo Registro Contable: {st.session_state.frente}")
+        with st.form("registro_operativo"):
+            fecha_op = st.date_input("Fecha contable:", date.today())
             
-        with t2:
-            st.write(f"**• Dinero en Caja:** {fmt_moneda(st.session_state.saldo_caja)}")
-            st.write(f"**• Inventarios Valorizados:** {fmt_moneda(st.session_state.inventario_stock)}")
-            st.markdown(f"#### 🎯 Indicadores Explicados por la IA:")
-            st.write(f"* **KTNO (Capital de Trabajo):** {fmt_moneda(st.session_state.inventario_stock + c_cobrar_tot)}. Representa los recursos que posees amarrados para abrir tu negocio mañana.")
+            if st.session_state.frente == "COMPRA":
+                prov_sel = st.text_input("Nombre del Proveedor:")
+                prod_compra = st.text_input("Producto/Artículo a ingresar:")
+                cant_c = st.number_input("Cantidad Comprada:", min_value=1, value=1)
+                costo_c = st.number_input("Costo Unitario ($ COP):", min_value=0.0)
+                modo_pago = st.radio("Método de Adquisición:", ["Contado", "Crédito"])
+                vence_op = st.date_input("Fecha Límite de Pago de la Obligación:", date.today())
+                
+            elif st.session_state.frente == "VENTA":
+                # Validar si existen clientes e inventarios
+                list_cl = list(st.session_state.db_clientes.keys()) if st.session_state.db_clientes else ["Cliente General"]
+                list_pr = list(st.session_state.db_inventario.keys()) if st.session_state.db_inventario else ["Producto General"]
+                
+                cl_sel = st.selectbox("Seleccionar Cliente:", list_cl)
+                prod_venta = st.selectbox("Seleccionar Artículo del Inventario:", list_pr)
+                cant_v = st.number_input("Cantidad Vendida:", min_value=1, value=1)
+                precio_v = st.number_input("Precio Unitario de Venta ($ COP):", min_value=0.0)
+                modo_pago = st.radio("Condición Comercial de la Venta:", ["Contado", "Crédito"])
+                vence_op = st.date_input("Fecha Límite de Recaudo de Cartera:", date.today())
+                
+            elif st.session_state.frente == "GASTO":
+                tipo_g = st.selectbox("Categoría del Gasto:", ["Servicio Público", "Nómina", "Arriendo"])
+                detalle_g = "N/A"
+                if tipo_g == "Servicio Público":
+                    detalle_g = st.selectbox("Detalle de la Factura:", ["Agua", "Luz", "Gas"])
+                valor_g = st.number_input("Monto Total del Gasto ($ COP):", min_value=0.0)
+                vence_op = st.date_input("Próxima fecha posible de pago / Vencimiento de Factura:", date.today())
+                modo_pago = "Contado"
 
-        # --- SECCIÓN DE DESCARGAS DE REPORTES PARA EL MICROEMPRESARIO ---
-        st.write("### 📥 Módulo de Descarga de Datos (Exportar Informes)")
-        if st.session_state.registro_ventas:
-            df_v = pd.DataFrame(st.session_state.registro_ventas)
-            st.download_button("Descargar Informe de Ventas (.CSV)", data=df_v.to_csv(index=False).encode('utf-8'), file_name="ventas_mes.csv", mime="text/csv")
-        if st.session_state.registro_gastos:
-            df_g = pd.DataFrame(st.session_state.registro_gastos)
-            st.download_button("Descargar Informe de Gastos (.CSV)", data=df_g.to_csv(index=False).encode('utf-8'), file_name="gastos_mes.csv", mime="text/csv")
+            elif st.session_state.frente == "COBRO":
+                cl_list = list(st.session_state.db_clientes.keys()) if st.session_state.db_clientes else ["Varios"]
+                cl_sel = st.selectbox("Cliente que realiza el abono:", cl_list)
+                monto_op = st.number_input("Monto Recaudado ($ COP):", min_value=0.0)
+                modo_pago = "Contado"
+                vence_op = date.today()
+
+            elif st.session_state.frente == "PAGO":
+                pr_list = list(st.session_state.db_proveedores.keys()) if st.session_state.db_proveedores else ["Varios"]
+                prov_sel = st.selectbox("Proveedor al que se le paga:", pr_list)
+                monto_op = st.number_input("Monto Pagado ($ COP):", min_value=0.0)
+                modo_pago = "Contado"
+                vence_op = date.today()
+
+            asentar = st.form_submit_button("💾 ASENTAR EN LIBRO DIARIO")
+            
+        if asentar:
+            id_trans = int(datetime.now().timestamp())
+            nuevo_asiento = {"id": id_trans, "Fecha": str(fecha_op), "Frente": st.session_state.frente, "Modo": modo_pago, "Vence": str(vence_op)}
+            
+            if st.session_state.frente == "COMPRA":
+                total = cant_c * costo_c
+                nuevo_asiento.update({"Tercero": prov_sel, "Detalle": prod_compra, "Cantidad": cant_c, "Valor_U": costo_c, "Total": total, "Costo_Venta": 0.0})
+                # Actualizar base de datos de inventario real
+                if prod_compra in st.session_state.db_inventario:
+                    st.session_state.db_inventario[prod_compra]["cantidad"] += cant_c
+                else:
+                    st.session_state.db_inventario[prod_compra] = {"cantidad": cant_c, "costo_u": costo_c, "ventas_unidades": 0}
+                if prov_sel not in st.session_state.db_proveedores:
+                    st.session_state.db_proveedores[prov_sel] = 0.0
+
+            elif st.session_state.frente == "VENTA":
+                total = cant_v * precio_v
+                costo_asoc = st.session_state.db_inventario.get(prod_venta, {}).get("costo_u", 0.0) * cant_v
+                nuevo_asiento.update({"Tercero": cl_sel, "Detalle": prod_venta, "Cantidad": cant_v, "Valor_U": precio_v, "Total": total, "Costo_Venta": costo_asoc})
+                # Descontar stock real
+                if prod_venta in st.session_state.db_inventario:
+                    st.session_state.db_inventario[prod_venta]["cantidad"] -= cant_v
+                    st.session_state.db_inventario[prod_venta]["ventas_unidades"] += cant_v
+
+            elif st.session_state.frente == "GASTO":
+                detalle_f = f"{tipo_g} ({detalle_g})" if tipo_g == "Servicio Público" else tipo_g
+                nuevo_asiento.update({"Tercero": "Gasto Operacional", "Detalle": detalle_f, "Cantidad": 1, "Valor_U": valor_g, "Total": valor_g, "Costo_Venta": 0.0})
+
+            elif st.session_state.frente == "COBRO":
+                nuevo_asiento.update({"Tercero": cl_sel, "Detalle": "Recaudo de Cartera", "Cantidad": 1, "Valor_U": monto_op, "Total": monto_op, "Costo_Venta": 0.0})
+
+            elif st.session_state.frente == "PAGO":
+                nuevo_asiento.update({"Tercero": prov_sel, "Detalle": "Cancelación de Obligación", "Cantidad": 1, "Valor_U": monto_op, "Total": monto_op, "Costo_Venta": 0.0})
+
+            st.session_state.libro_diario.append(nuevo_asiento)
+            st.success("Transacción asentada en la matriz diaria con éxito.")
+            st.rerun()
+
+    st.markdown("---")
+
+    # =========================================================================
+    # FASE 3: DIARIO HISTÓRICO CON AUDITORÍA (CORREGIR PARTIDAS)
+    # =========================================================================
+    st.subheader("📖 Matriz del Libro Diario y Auditoría")
+    if st.session_state.libro_diario:
+        df_diario = pd.DataFrame(st.session_state.libro_diario)
+        
+        # Mapeo de columnas visuales
+        st.dataframe(df_diario[["Fecha", "Frente", "Tercero", "Detalle", "Cantidad", "Valor_U", "Total", "Modo", "Vence"]], use_container_width=True)
+        
+        # Sistema de Corrección por Partida Específica
+        st.markdown("**⚙️ Zona de Auditoría Operativa:**")
+        col_au1, col_au2 = st.columns([2, 2])
+        idx_del = col_au1.selectbox("Seleccione el asiento a eliminar o corregir:", options=range(len(st.session_state.libro_diario)), format_func=lambda i: f"Asiento {i}: {st.session_state.libro_diario[i]['Frente']} - {st.session_state.libro_diario[i]['Tercero']} (${st.session_state.libro_diario[i]['Total']:,.0f})")
+        if col_au1.button("🗑️ Eliminar Partida Seleccionada"):
+            partida_eliminada = st.session_state.libro_diario.pop(idx_del)
+            # Revertir stock si fue venta o compra
+            if partida_eliminada["Frente"] == "VENTA" and partida_eliminada["Detalle"] in st.session_state.db_inventario:
+                st.session_state.db_inventario[partida_eliminada["Detalle"]]["cantidad"] += partida_eliminada["Cantidad"]
+                st.session_state.db_inventario[partida_eliminada["Detalle"]]["ventas_unidades"] -= partida_eliminada["Cantidad"]
+            elif partida_eliminada["Frente"] == "COMPRA" and partida_eliminada["Detalle"] in st.session_state.db_inventario:
+                st.session_state.db_inventario[partida_eliminada["Detalle"]]["cantidad"] -= partida_eliminada["Cantidad"]
+            st.warning("Partida eliminada y balances de inventario revertidos automáticamente.")
+            st.rerun()
+            
+        csv_data = df_diario.to_csv(index=False).encode('utf-8')
+        col_au2.download_button("📥 Descargar Reporte de Transacciones (CSV)", data=csv_data, file_name=f"libro_diario_{st.session_state.negocio}.csv", mime="text/csv")
+    else:
+        st.info("No se registran transacciones contables registradas en el día.")
+
+    st.markdown("---")
+
+    # =========================================================================
+    # FASE 4: RECOMENDADOR IA Y ALERTAS AUTOMATIZADAS (WHATSAPP)
+    # =========================================================================
+    st.subheader("💡 Asesoría Financiera Inteligente y Alertas Tempranas")
+    col_as1, col_as2 = st.columns(2)
+    
+    with col_as1:
+        st.markdown("### 🔔 Módulo de Alertas Críticas (Vencimientos)")
+        hoy = date.today()
+        
+        # Alertas de Inventario Crítico
+        for prod, info in st.session_state.db_inventario.items():
+            if info["cantidad"] <= 2:
+                st.markdown(f"<div class='alert-warn'>⚠️ <b>Alerta de Inventario:</b> El producto '{prod}' está próximo a ruptura de stock ({info['cantidad']} unidades restantes).</div>", unsafe_allow_html=True)
+        
+        # Alertas de Cuentas por Cobrar (Ventas Crédito)
+        for asiento in st.session_state.libro_diario:
+            if asiento["Frente"] == "VENTA" and asiento["Modo"] == "Crédito":
+                f_vence = datetime.strptime(asiento["Vence"], "%Y-%m-%d").date()
+                if f_vence <= hoy:
+                    st.markdown(f"<div class='alert-warn'>⏳ <b>Cartera Vencida:</b> {asiento['Tercero']} presenta una deuda de ${asiento['Total']:,.0f} COP.</div>", unsafe_allow_html=True)
+                    msg_wa = f"Estimado {asiento['Tercero']}, le recordamos amablemente que su saldo de ${asiento['Total']:,.0f} COP con {st.session_state.negocio} venció el {asiento['Vence']}. Agradecemos su gestión de pago."
+                    link = f"https://wa.me/?text={msg_wa.replace(' ', '%20')}"
+                    st.markdown(f"[📲 Enviar Recordatorio de Cobro vía WhatsApp]({link})")
+
+            # Alertas de Facturas de Servicios / Proveedores Vencidas
+            if asiento["Modo"] == "Crédito" and asiento["Frente"] == "COMPRA":
+                f_vence = datetime.strptime(asiento["Vence"], "%Y-%m-%d").date()
+                if f_vence <= hoy:
+                    st.markdown(f"<div class='alert-warn'>🔴 <b>Obligación Vencida con Proveedor:</b> Deuda con {asiento['Tercero']} por ${asiento['Total']:,.0f} COP venció hoy. Prorrogue o liquide para evitar bloqueos de suministro.</div>", unsafe_allow_html=True)
+
+    with col_as2:
+        st.markdown("### 🧠 Recomendaciones Analíticas de Ruta Estratégica")
+        if st.session_state.db_inventario:
+            df_inv_analisis = pd.DataFrame.from_dict(st.session_state.db_inventario, orient='index')
+            prod_estrella = df_inv_analisis['ventas_unidades'].idxmax()
+            prod_lento = df_inv_analisis['ventas_unidades'].idxmin()
+            
+            if df_inv_analisis['ventas_unidades'].max() > 0:
+                st.success(f"⭐ **Ruta de Alta Rotación:** El producto '{prod_estrella}' es el más vendido del período. Recomendación: Incremente un 20% el capital de trabajo destinado a este ítem para blindar su cadena de suministro.")
+                st.error(f"📉 **Alerta de Inmovilizado:** El artículo '{prod_lento}' muestra nula o muy baja rotación en el mercado. Recomendación: Libere flujo de caja ejecutando promociones cruzadas o combos con el producto estrella.")
+            else:
+                st.info("El Asesor IA está esperando mayor volumen de transacciones de venta para generar patrones de optimización de inventarios.")
+        else:
+            st.info("Cargue productos en el inventario para activar el motor de estrategia.")
+
+    st.markdown("---")
+
+    # =========================================================================
+    # FASE 5: ESTADOS FINANCIEROS DINÁMICOS COMPLETOS
+    # =========================================================================
+    st.subheader("📊 Estados Financieros Generados de Forma Automática")
+    t1, t2, t3 = st.tabs(["📋 Estado de Resultados", "⚖️ Balance General", "💸 Flujo de Caja (Método Directo)"])
+    
+    # Cálculos Financieros Consolidados
+    ingresos_totales = sum(a["Total"] for a in st.session_state.libro_diario if a["Frente"] == "VENTA")
+    costo_ventas_total = sum(a.get("Costo_Venta", 0.0) for a in st.session_state.libro_diario if a["Frente"] == "VENTA")
+    gastos_totales = sum(a["Total"] for a in st.session_state.libro_diario if a["Frente"] == "GASTO")
+    utilidad_neta = ingresos_totales - costo_ventas_total - gastos_totales
+    
+    val_inventario_actual = sum(v["cantidad"] * v["costo_u"] for v in st.session_state.db_inventario.values())
+
+    with t1:
+        st.markdown("#### Estado de Resultados Integral")
+        st.markdown(f"""
+        | Cuenta Contable | Valor Nominal |
+        | :--- | :--- |
+        | **(+) Ingresos de Actividades Ordinarias (Ventas)** | ${ingresos_totales:,.2f} COP |
+        | **(-) Costo de Ventas (Inventario Consumido)** | ${costo_ventas_total:,.2f} COP |
+        | **(=) UTILIDAD BRUTA** | **${(ingresos_totales - costo_ventas_total):,.2f} COP** |
+        | **(-) Gastos Operacionales (Servicios, Arriendos, Nóminas)** | ${gastos_totales:,.2f} COP |
+        | **(=) UTILIDAD NETA DEL EJERCICIO** | **${utilidad_neta:,.2f} COP** |
+        """)
+
+    with t2:
+        st.markdown("#### Balance General")
+        total_activos = caja_actual + cartera_actual + val_inventario_actual
+        total_pasivos = proveedores_actual
+        patrimonio_neto = total_activos - total_pasivos
+        
+        st.markdown(f"""
+        | ACTIVO (Estructura de Inversión) | | PASIVO Y PATRIMONIO (Estructura de Financiación) | |
+        | :--- | :--- | :--- | :--- |
+        | 💵 Caja y Efectivo Disponible | ${caja_actual:,.2f} COP | 🏭 Obligaciones Proveedores (Pasivo) | ${total_pasivos:,.2f} COP |
+        | 👥 Cartera Comercial (Clientes) | ${cartera_actual:,.2f} COP | | |
+        | 📦 Inventarios Valorados Real | ${val_inventario_actual:,.2f} COP | ⚖️ Patrimonio Líquido / Neto | ${patrimonio_neto:,.2f} COP |
+        | **TOTAL ACTIVOS** | **${total_activos:,.2f} COP** | **TOTAL PASIVOS + PATRIMONIO** | **${(total_pasivos + patrimonio_neto):,.2f} COP** |
+        """)
+
+    with t3:
+        st.markdown("#### Flujo de Caja Mensual")
+        entradas_efectivo = sum(a["Total"] for a in st.session_state.libro_diario if a["Frente"] == "COBRO" or (a["Frente"] == "VENTA" and a["Modo"] == "Contado"))
+        salidas_efectivo = sum(a["Total"] for a in st.session_state.libro_diario if a["Frente"] in ["PAGO", "GASTO"] or (a["Frente"] == "COMPRA" and a["Modo"] == "Contado"))
+        flujo_neto_efectivo = entradas_efectivo - salidas_efectivo
+        
+        st.markdown(f"""
+        * **Efectivo Neto de Apertura (Caja Inicial):** ${st.session_state.caja_inicial:,.2f} COP
+        * **(+) Flujos de Efectivo por Actividades de Operación (Recaudos/Ventas):** ${entradas_efectivo:,.2f} COP
+        * **(-) Flujos de Efectivo Aplicados a Operación (Pagos/Compras/Gastos):** ${salidas_efectivo:,.2f} COP
+        * **(=) INCREMENTO / DISMINUCIÓN NETO DE EFECTIVO:** **${flujo_neto_efectivo:,.2f} COP**
+        * **💵 SALDO FINAL DISPONIBLE EN CAJA:** **${caja_actual:,.2f} COP**
+        """)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🔄 Reiniciar Aplicación y Limpiar Memoria"):
+        st.session_state.clear()
+        st.rerun()
